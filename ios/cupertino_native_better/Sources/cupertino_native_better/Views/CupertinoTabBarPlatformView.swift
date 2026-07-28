@@ -2,6 +2,20 @@ import Flutter
 import UIKit
 import SVGKit
 
+/// Container view that re-lays-out the embedded UITabBar once it first
+/// receives a non-zero width. A UITabBar initially laid out at width 0 renders
+/// degraded — only the selected item shows a (often truncated) label, the
+/// others none — and doesn't recover until something forces a re-layout (e.g.
+/// the user tapping a tab). [onLayout] lets the platform view trigger that
+/// re-layout automatically at startup.
+final class CNTabBarContainerView: UIView {
+  var onLayout: ((CGFloat) -> Void)?
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    onLayout?(bounds.width)
+  }
+}
+
 class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelegate {
   private let channel: FlutterMethodChannel
   private let container: UIView
@@ -32,9 +46,15 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var labelFontFamily: String? = nil
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
 
+  // Startup re-layout: a UITabBar first laid out at width 0 renders degraded
+  // (labels missing/truncated) until forced to re-layout. We trigger that once
+  // the container receives a real width.
+  private var lastLaidOutWidth: CGFloat = 0
+  private var isRelayingOut = false
+
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
-    self.container = UIView(frame: frame)
+    self.container = CNTabBarContainerView(frame: frame)
 
     var labels: [String] = []
     var symbols: [String] = []
@@ -1023,6 +1043,12 @@ channel.setMethodCallHandler { [weak self] call, result in
         result(FlutterMethodNotImplemented)
       }
     }
+
+    // Re-layout the bar(s) automatically once the container has a real width,
+    // so the labels render correctly at startup without needing a tab tap.
+    (self.container as? CNTabBarContainerView)?.onLayout = { [weak self] width in
+      self?.handleContainerLayout(width: width)
+    }
   }
 
   deinit {
@@ -1036,6 +1062,42 @@ channel.setMethodCallHandler { [weak self] call, result in
   }
 
   func view() -> UIView { container }
+
+  // MARK: - Startup re-layout
+
+  private func handleContainerLayout(width: CGFloat) {
+    guard width > 0, width != lastLaidOutWidth, !isRelayingOut else { return }
+    lastLaidOutWidth = width
+    isRelayingOut = true
+    // Defer: don't mutate the view hierarchy inside a layout pass.
+    DispatchQueue.main.async { [weak self] in
+      self?.forceLabelRelayout()
+      self?.isRelayingOut = false
+    }
+  }
+
+  /// Cycles each bar's selection to force UITabBar to lay out all item labels
+  /// (the same effect a tab tap has). Selection is restored afterwards.
+  private func forceLabelRelayout() {
+    let bars = [tabBar, tabBarLeft, tabBarRight].compactMap { $0 }
+    guard !bars.isEmpty else { return }
+    UIView.performWithoutAnimation {
+      for bar in bars {
+        guard let items = bar.items, !items.isEmpty else { continue }
+        let original = bar.selectedItem
+        bar.delegate = nil
+        for item in items {
+          bar.selectedItem = item
+          bar.setNeedsLayout()
+          bar.layoutIfNeeded()
+        }
+        bar.selectedItem = original
+        bar.setNeedsLayout()
+        bar.layoutIfNeeded()
+        bar.delegate = self
+      }
+    }
+  }
 
   // MARK: - Appearance helpers
 
