@@ -67,6 +67,13 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
     self.hostingController = UIHostingController(rootView: glassView)
     self.hostingController.view.backgroundColor = .clear
     self.hostingController.overrideUserInterfaceStyle = isDark ? .dark : .light
+    // Don't propagate the screen's safe area into the SwiftUI glass. When the
+    // container's frame reaches into the bottom safe area (e.g. a floating
+    // bottom panel), UIHostingController otherwise insets the SwiftUI content
+    // by the overlap, so the glass renders short of the frame's bottom edge.
+    // Same issue class as the safeAreaInsets override in
+    // CupertinoSwitchPlatformView.swift.
+    self.hostingController.safeAreaRegions = []
 
     super.init()
     self.configuredShape = shape
@@ -95,6 +102,14 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
       } else if call.method == "setTransitioning" {
         let active = ((call.arguments as? [String: Any])?["active"] as? NSNumber)?.boolValue ?? false
         self?.applyTransitionContainment(active)
+        result(nil)
+      } else if call.method == "setInteractive" {
+        if let args = call.arguments as? [String: Any],
+           let interactive = (args["interactive"] as? NSNumber)?.boolValue {
+          NSLog("[CN Glass] setInteractive=\(interactive)")
+          self?._cnSetInteractiveRecursive(self?.container, interactive)
+          self?._cnSetInteractiveRecursive(self?.hostingController.view, interactive)
+        }
         result(nil)
       } else {
         result(FlutterMethodNotImplemented)
@@ -193,6 +208,12 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
   func view() -> UIView {
     return container
   }
+
+  private func _cnSetInteractiveRecursive(_ view: UIView?, _ interactive: Bool) {
+    guard let view = view else { return }
+    view.isUserInteractionEnabled = interactive
+    for sub in view.subviews { _cnSetInteractiveRecursive(sub, interactive) }
+  }
 }
 
 @available(iOS 26.0, *)
@@ -274,14 +295,25 @@ extension View {
   }
 }
 
-// Fallback for iOS < 26
+// Fallback for iOS < 26.
+//
+// Must register a MethodChannel no-op handler so Dart-side calls like
+// setTransitioning (Issue #29 halo containment) and setInteractive
+// (ModalHideMixin) don't throw MissingPluginException. Same fix as the
+// CupertinoGlassButtonGroup fallback.
 class FallbackLiquidGlassContainerView: NSObject, FlutterPlatformView {
   private let container: UIView
+  private let channel: FlutterMethodChannel
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.container = UIView(frame: frame)
     self.container.backgroundColor = .clear
+    self.channel = FlutterMethodChannel(
+      name: "CupertinoNativeLiquidGlassContainer_\(viewId)",
+      binaryMessenger: messenger
+    )
     super.init()
+    self.channel.setMethodCallHandler { _, result in result(nil) }
   }
 
   func view() -> UIView {

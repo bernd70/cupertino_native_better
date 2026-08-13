@@ -1,3 +1,178 @@
+## 1.5.4
+
+### Fixed — #64 `LiquidGlassContainer` glass renders short in the bottom safe area
+
+When a `LiquidGlassContainer`'s frame reached into the bottom safe area — the common "floating bottom panel" layout on home-indicator devices — the native glass stopped short of the frame it was given. Flutter-drawn children stayed in the right place, so they visually spilled outside the glass.
+
+**Cause:** `LiquidGlassContainerPlatformView` hosts the SwiftUI glass in a `UIHostingController`, which propagates the screen's safe area into its SwiftUI content. Where the platform view's frame overlapped the home-indicator inset, the hosted `GeometryReader`/shape was inset by that overlap, so the glass filled only the reduced size.
+
+**Fix:** `self.hostingController.safeAreaRegions = []`, matching the intent of the existing `safeAreaInsets` override in `CupertinoSwitchPlatformView.swift`. `safeAreaRegions` is iOS 16.4+ and the class is already `@available(iOS 26.0, *)`, so no extra availability guard is needed.
+
+Reported and fixed by @fbernack (PR #64), who measured up to **22 pt** short on an iPhone 17 Pro (iOS 26.4 simulator). Independently reproduced and verified on a physical iPhone running **iOS 26.5**: with a 140 pt panel pinned flush to the bottom of a 34 pt inset, the glass fell **~21 pt** short of its frame before the fix and filled it completely after.
+
+macOS is unaffected — `LiquidGlassContainerNSView` uses `NSHostingController`, and macOS windows have no bottom safe-area inset in practice.
+
+### Example app
+
+- New: `Testing → PR #64: LiquidGlass safe-area clip` — a glass panel whose bottom offset, height, and shape (`rect` / `capsule` / `circle`) are adjustable live. A solid red strip fills exactly the safe-area inset (the zone the bug leaves uncovered), a Flutter-drawn magenta outline marks the panel's true frame, and a cyan dashed line marks the safe-area boundary — so "glass short of frame" is directly visible rather than a judgement call. Sliding the bottom offset past the boundary shows whether the glass stays attached to its frame.
+
+---
+
+## 1.5.3
+
+### Fixed — #62 `CNTabBar` taps swallowed by ancestor gesture recognizers
+
+`CNTabBar` stopped responding to taps whenever any ancestor widget held an active gesture recognizer over the same region. The reporter's minimal repro:
+
+```dart
+GestureDetector(
+  onLongPress: () {},        // any active recognizer is enough
+  child: CNTabBar(items: [...], currentIndex: i, onTap: ...),
+)
+```
+
+Tapping a tab did nothing. In the wild this surfaced via `requests_inspector`, which wraps the whole app in a long-press `GestureDetector` — installing it silently killed the tab bar.
+
+**Cause:** `_buildNativeTabBarPlatformView` constructed the iOS `UiKitView` / macOS `AppKitView` without a `gestureRecognizers` set. With none supplied, the platform view is a passive arena participant and only receives touches if nothing else claims them, so the ancestor won uncontested.
+
+**Fix:** both platform-view branches now pass `Factory<EagerGestureRecognizer>(() => EagerGestureRecognizer())`. `EagerGestureRecognizer.addAllowedPointer` immediately calls `resolve(GestureDisposition.accepted)`, so the platform view claims the pointer on pointer-down and touches forward to the native `UITabBar` regardless of what is competing.
+
+Note the trade-off: gestures made **directly over the tab bar** (long-press, drag) now go to the native bar instead of bubbling to ancestor recognizers. This is the intended behaviour for a tab bar, which is only ever tapped.
+
+Reported and originally patched by @MohamedAboElM3aTy (#62, PR #63). The submitted patch used a bare `TapGestureRecognizer()`, which is a no-op — Flutter's `TapGestureRecognizer.isPointerAllowed` returns `false` when none of `onTapDown`/`onTap`/`onTapUp`/`onTapCancel`/`onTapMove` are set, so the recognizer never enters the arena. Amended to `EagerGestureRecognizer` before merge and verified on-device (iPhone, iOS 26.5).
+
+### Known — same gap remains in other components (#65)
+
+The identical issue affects other platform-view widgets and is tracked in #65. It is **not** a uniform fix, so it was deliberately kept out of this release:
+
+- `button.dart`, `switch.dart`, `slider.dart`, `popup_menu_button.dart` pass a bare `TapGestureRecognizer()` and therefore carry the same latent no-op.
+- `segmented_control.dart`, `glass_button_group.dart`, `icon.dart`, `liquid_glass_container.dart`, `floating_island.dart`, `search_bar.dart`, `search_scaffold.dart` pass no `gestureRecognizers` at all.
+- Several of those **must not** get a claiming recognizer — `icon.dart` is decorative (it would steal taps from parent widgets), `liquid_glass_container.dart` / `floating_island.dart` / `search_bar.dart` deliberately wrap the platform view in `IgnorePointer` and handle interaction Flutter-side, and `search_scaffold.dart`'s view is `Positioned.fill` behind all Flutter content.
+- The button-like components need an *armed* tap recognizer (`TapGestureRecognizer()..onTap = () {}`) rather than an eager one, so drags still fall through to a parent scrollable — `button.dart:654` documents that intent explicitly.
+
+### Example app
+
+- New: `Testing → #62 / PR #63: CNTabBar tap gesture arena` — three switchable scenarios verifying the fix on-device: an ancestor `GestureDetector(onLongPress:)` (the reporter's minimal repro), an ancestor `PageView` (drag-vs-tap competition), and a no-ancestor baseline for regression coverage. Each scenario avoids nesting a `Scrollable` in the gesture region so ancestor gestures resolve deterministically.
+
+---
+
+## 1.5.2
+
+### Fixed — #61 `CNBottomSheet.showCupertino` compile error on Flutter < 3.44
+
+`CNBottomSheet.showCupertino` in v1.5.1 called Flutter's `showCupertinoSheet()` with a `scrollableBuilder:` named parameter. That parameter was only added to `showCupertinoSheet` in Flutter **3.44.0** (via [flutter/flutter#177337](https://github.com/flutter/flutter/pull/177337), 2026-01-23). Anyone consuming the package on stable **3.35 – 3.41.x** — including a substantial share of production Flutter users, FlutterFlow environments, and CI setups — hit a hard compile error:
+
+```
+No named parameter with the name 'scrollableBuilder'.
+```
+
+Fix: switched to `builder:` (the current API on 3.35 – 3.41; deprecated-but-still-accepted on 3.44+). The lambda didn't use its `ScrollController` anyway, so the swap is behaviour-preserving. Compatible from Flutter 3.35 through today's master.
+
+Thanks @ArkayGit for the clean, precisely-scoped bug report.
+
+### Fixed — #46 `CNToast` queue deadlock after route pop
+
+`CNToast` stored the caller's `BuildContext` on each queued `_ToastEntry` and re-resolved `Overlay.of(entry.context)` inside `_showNext()` — which fires from a `Timer` after each toast's duration. If the caller's widget was disposed while toasts were pending (typical: user shows a toast then taps back), the framework crashed with:
+
+```
+Looking up a deactivated widget's ancestor is unsafe.
+```
+
+Worse, after the throw, `_isShowing` was left `true` and the queue was **permanently stuck** — every subsequent `CNToast.show/success/error/warning/info` call would silently `_queue.add()` without displaying, until app restart. Only `CNToast.loading()` still worked (it bypasses the queue and inserts into the overlay directly).
+
+Fix (in `lib/components/toast.dart`):
+
+- `_ToastEntry` now stores an `OverlayState` (resolved eagerly at `CNToast.show()` time), not a `BuildContext`. `_showNext()` no longer touches the caller's context and cannot throw on a deactivated widget.
+- Added `entry.overlay.mounted` short-circuit and a `try/catch` around `overlay.insert(...)` — if the OverlayState disappears between enqueue and display (extremely rare), the entry is dropped and the queue keeps draining. `_isShowing` is guaranteed to reset.
+
+### Fixed — #46 `CNToast` renders with yellow double-underline under `MaterialApp` (reporter's screenshot)
+
+The same issue also carried a second, unrelated defect surfaced by @macedondev's screenshot: text rendered as **dim red monospace with a yellow double-underline**. That's `MaterialApp._errorTextStyle` (`flutter/lib/src/material/app.dart:45`), Flutter's built-in "your Text has no Material ancestor" debug fallback. `MaterialApp` installs it as the ambient `DefaultTextStyle` at the app root; `_ToastOverlay` renders its `Text` inside an `OverlayEntry` with no `Material` between them, so the fallback style wins. `CupertinoApp` doesn't install `_errorTextStyle`, which is why the maintainer couldn't reproduce the bug locally.
+
+Fix: wrap the toast content in `Material(type: MaterialType.transparency, ...)` inside `_ToastOverlay.build()`, positioned **between `IgnorePointer` and `Align`** so `Positioned` still sees the `Overlay`'s `Stack` as its direct parent (a `Material` between them would break `Positioned`'s parent-data contract and throw `Incorrect use of ParentDataWidget`). Transparent Material paints nothing, so `CupertinoApp` users see no visual change; MaterialApp users get proper text-style resolution and the yellow underlines are gone. Applies to both the queued (`_showNext()`) and direct-insert (`loading()`) toast paths.
+
+Thanks @macedondev for the report.
+
+### Example app
+
+- New: `Testing → #46: CNToast use_build_context_synchronously` — two labeled scenarios. **Bug A** (queue crash on dispose): spam-and-pop button that queues 5 toasts then pops the route ~250ms in, reproducing the "Looking up a deactivated widget's ancestor" crash pre-fix and demonstrating the queue-drains-cleanly behaviour post-fix. **Bug B** (yellow underlines): a route whose body is a nested `MaterialApp` so `CNToast` fires into an overlay with the ambient `_errorTextStyle` — reproduces the reporter's exact rendering. Plus a quick-trigger row for all six `CNToast.*` variants for regression coverage.
+
+---
+
+## 1.5.1
+
+### Fixed — #53 PlatformView z-order bleed under bottom sheets
+
+iOS hybrid composition was reusing the same `PlatformViewContainer` for both a host-page CN-widget and a CN-widget inside a presented sheet, causing the host-page widget's pixels to leak through the sheet's scrim (and vice-versa).
+
+**Fix:** new `ModalHideMixin` (in `lib/utils/modal_hide_mixin.dart`) applied to **all 9** CN widgets that use a PlatformView — `CNButton`, `CNGlassButtonGroup`, `CNSwitch`, `CNSegmentedControl`, `CNPopupMenuButton`, `CNSearchBar`, `CNLiquidGlassContainer`, `CNFloatingIsland`, `CNSlider`. Each widget now destroys its PlatformView (with a same-size placeholder reserving the layout slot) while a sheet covers it, and recreates it when the sheet dismisses.
+
+Each affected widget gained an `autoHideOnModal: bool = true` constructor parameter so users can opt out per-instance.
+
+### New — `CNBottomSheet` + `CNSheetGeometryProbe`
+
+For the modal-hide to be **position-aware** (only widgets actually behind the sheet hide, not the entire host route), the sheet has to publish its rect each frame. Two new public APIs cover this:
+
+- **`CNBottomSheet`** (in `lib/components/bottom_sheet.dart`) — drop-in wrappers that inject the probe automatically:
+
+  ```dart
+  CNBottomSheet.show(context: context, builder: (ctx) => MySheet());
+  CNBottomSheet.showCupertino(context: context, builder: (ctx) => MySheet());
+  CNBottomSheet.showModalPopup(context: context, builder: (ctx) => MySheet());
+  ```
+
+- **`CNSheetGeometryProbe`** — wrap your own sheet builder manually if you need to keep using the framework APIs directly:
+
+  ```dart
+  showModalBottomSheet(
+    context: context,
+    builder: (ctx) => CNSheetGeometryProbe(child: MySheet()),
+  );
+  ```
+
+Without one of these the package falls back to a conservative "hide every CN-widget on this route while any modal is up" behavior — safe, but coarser than needed (an app-bar CN-button could disappear behind a 30%-height sheet).
+
+`CNTabBarRouteObserver` also gained `topModalRect: ValueNotifier<Rect?>` and `publishTopModalRect(Rect?)`, used by the probe.
+
+### Fixed — #55 `CNPopupMenuItem.isDestructive`
+
+`CNPopupMenuItem` gained `isDestructive: bool = false`. When true:
+
+- iOS 14+ adds `UIMenuElement.Attributes.destructive` → the **label** renders in the system destructive red (previously only the icon could be red via `iconColor`).
+- iOS 13 legacy fallback uses `UIAlertAction.Style.destructive`.
+- iOS < 26 / non-iOS Cupertino fallback uses `CupertinoActionSheetAction(isDestructiveAction: true)`.
+
+Thanks @ashellz for the report.
+
+### Fixed — CNGlassButtonGroup remount blink
+
+`CNGlassButtonGroup`'s `FutureBuilder` returned `SizedBox.shrink()` for one frame between the modal-hide placeholder removal and the platform view actually mounting — text below jumped up then back down on every sheet dismiss. The pending branch now mirrors the placeholder's axis-aware dimensions so the layout slot is held across the swap.
+
+### Fixed — PR #57 macOS `CNSwitch` rendered as a checkbox
+
+The macOS `Toggle` defaulted to a checkbox under recent SDKs. Applied `.toggleStyle(.switch)` to force the switch appearance. iOS unaffected. Thanks @jonathanfristedt.
+
+### Fixed — `MissingPluginException` storm during transitions
+
+`ch.invokeMethod('setTransitioning', …)` calls now use `.catchError((_) {})` to swallow async rejections, and fallback platform-view classes (iOS < 26) register no-op `MethodChannel` handlers so Dart-side calls from `ModalHideMixin` and route-transition containment don't throw.
+
+### Docs
+
+- `pubspec.yaml` `documentation:` now points to https://gunumdogdu.com/docs.
+- README documents `CNBottomSheet` / `CNSheetGeometryProbe` usage and the navigatorObserver requirement for modal-hide to work.
+
+### Example app
+
+- New: `Testing → #53: CNButton under bottom sheet` — four sheet-opener variants over a host page full of CN widgets.
+- New: `Testing → #55: PopupMenu isDestructive` — text, icon, and mixed menus with destructive items.
+- New: `Testing → Glass widgets modal halo test` — all 9 CN widgets behind sheets.
+- New: `Testing → CNButton modal halo test` — modal route push/pop animations.
+- New: `Testing → #37: CNAppBar button halo test`.
+
+### Known limitations
+
+- `CNGlassButtonGroup` glass merging at default spacing still shows a "dumbbell" between buttons. The single-uniform-pill rewrite hit a SwiftUI hit-testing limitation (`.glassEffect()` intercepts touches at a layer below `.allowsHitTesting(false)`); a UIKit `UIVisualEffectView` rewrite is queued for the next release.
+
 ## 1.5.0
 
 ### New — CNTabBarNative gains minimize, native lists, accessory & root mode

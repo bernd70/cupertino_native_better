@@ -23,7 +23,13 @@ import 'demos/issue29_transition_test.dart';
 import 'demos/issue31_no_search_test.dart';
 import 'demos/issue31_textfield_disappear_test.dart';
 import 'demos/issue36_liquid_glass_modal_test.dart';
+import 'demos/issue37_appbar_button_halo_test.dart';
+import 'demos/issue53_cnbutton_under_sheet_test.dart';
 import 'demos/issue40_button_label_style_test.dart';
+import 'demos/issue46_cntoast_context_test.dart';
+import 'demos/issue62_tabbar_gesture_arena_test.dart';
+import 'demos/pr64_liquid_glass_safe_area_test.dart';
+import 'demos/issue55_popup_menu_destructive_test.dart';
 import 'demos/pr42_tabbar_iconsize_customicon_test.dart';
 import 'demos/issue33_svg_tabbar_test.dart';
 import 'demos/stack_positioned_tabbar_test.dart';
@@ -355,6 +361,34 @@ class HomePage extends StatelessWidget {
                 },
               ),
               CupertinoListTile(
+                title: Text('#37: AppBar CNButton halo bleed through sheet'),
+                leading: CNIcon(
+                  symbol: CNSymbol('bell.badge', color: accentColor),
+                ),
+                trailing: CupertinoListTileChevron(),
+                onTap: () {
+                  Navigator.of(context).push(
+                    CupertinoPageRoute(
+                      builder: (_) => const Issue37AppBarButtonHaloTest(),
+                    ),
+                  );
+                },
+              ),
+              CupertinoListTile(
+                title: Text('#53: CNButton under bottom sheet'),
+                leading: CNIcon(
+                  symbol: CNSymbol('square.and.pencil', color: accentColor),
+                ),
+                trailing: CupertinoListTileChevron(),
+                onTap: () {
+                  Navigator.of(context).push(
+                    CupertinoPageRoute(
+                      builder: (_) => const Issue53CNButtonUnderSheetTest(),
+                    ),
+                  );
+                },
+              ),
+              CupertinoListTile(
                 title: Text('#40: CNButton label style'),
                 leading: CNIcon(
                   symbol: CNSymbol('textformat.size', color: accentColor),
@@ -364,6 +398,66 @@ class HomePage extends StatelessWidget {
                   Navigator.of(context).push(
                     CupertinoPageRoute(
                       builder: (_) => const Issue40ButtonLabelStyleTest(),
+                    ),
+                  );
+                },
+              ),
+              CupertinoListTile(
+                title: Text('#46: CNToast use_build_context_synchronously'),
+                leading: CNIcon(
+                  symbol: CNSymbol(
+                    'exclamationmark.bubble',
+                    color: accentColor,
+                  ),
+                ),
+                trailing: CupertinoListTileChevron(),
+                onTap: () {
+                  Navigator.of(context).push(
+                    CupertinoPageRoute(
+                      builder: (_) => const Issue46CNToastContextTestPage(),
+                    ),
+                  );
+                },
+              ),
+              CupertinoListTile(
+                title: Text('#62 / PR #63: CNTabBar tap gesture arena'),
+                leading: CNIcon(
+                  symbol: CNSymbol('hand.tap.fill', color: accentColor),
+                ),
+                trailing: CupertinoListTileChevron(),
+                onTap: () {
+                  Navigator.of(context).push(
+                    CupertinoPageRoute(
+                      builder: (_) => const Issue62TabBarGestureArenaTestPage(),
+                    ),
+                  );
+                },
+              ),
+              CupertinoListTile(
+                title: Text('PR #64: LiquidGlass safe-area clip'),
+                leading: CNIcon(
+                  symbol: CNSymbol(
+                    'rectangle.bottomthird.inset.filled',
+                    color: accentColor,
+                  ),
+                ),
+                trailing: CupertinoListTileChevron(),
+                onTap: () {
+                  Navigator.of(context).push(
+                    CupertinoPageRoute(
+                      builder: (_) => const Pr64LiquidGlassSafeAreaTestPage(),
+                    ),
+                  );
+                },
+              ),
+              CupertinoListTile(
+                title: Text('#55: PopupMenu isDestructive'),
+                leading: CNIcon(symbol: CNSymbol('trash', color: accentColor)),
+                trailing: CupertinoListTileChevron(),
+                onTap: () {
+                  Navigator.of(context).push(
+                    CupertinoPageRoute(
+                      builder: (_) => const Issue55PopupMenuDestructiveTest(),
                     ),
                   );
                 },
